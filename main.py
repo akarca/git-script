@@ -46,6 +46,9 @@ def run_remote_setup(ssh_host_alias, remote_path):
 
         else:
             print(f"\n[!] Hata: Yerelde '{local_hook_file}' dosyası bulunamadı.")
+        
+        with c.cd(remote_path):
+            c.run("git config receive.denyCurrentBranch ignore")
 
     except Exception as e:
         print(f"\n[!] Bağlantı veya komut hatası: {e}")
