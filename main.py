@@ -1,4 +1,5 @@
 import os
+import subprocess
 import sys
 
 from fabric import Connection
@@ -7,6 +8,14 @@ if not sys.warnoptions:
     import warnings
 
     warnings.simplefilter("ignore")
+
+
+def _scp_upload(ssh_host_alias, local_path, remote_path):
+    """scp -O ile dosya yükle (SFTP desteklemeyen sunucular için)."""
+    cmd = ["scp", "-O", local_path, f"{ssh_host_alias}:{remote_path}"]
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"scp hatası: {result.stderr.strip()}")
 
 
 def run_remote_setup(ssh_host_alias, remote_path):
@@ -27,13 +36,13 @@ def run_remote_setup(ssh_host_alias, remote_path):
         with c.cd(remote_path):
             c.run("git init .")
 
-        # 3. Localdeki hook dosyasını yükle
+        # 3. Localdeki hook dosyasını yükle (scp -O ile, SFTP yerine)
         local_hook_file = "create-post-update-hook.sh"
         remote_hook_dest = f"{remote_path}/{local_hook_file}"
 
         if os.path.exists(local_hook_file):
             print(f"[*] {local_hook_file} yükleniyor...")
-            c.put(local_hook_file, remote=remote_hook_dest)
+            _scp_upload(ssh_host_alias, local_hook_file, remote_hook_dest)
 
             # 4. Çalıştırma izni ver ve execute et
             print("[*] Hook dosyası çalıştırılıyor...")
@@ -46,7 +55,7 @@ def run_remote_setup(ssh_host_alias, remote_path):
 
         else:
             print(f"\n[!] Hata: Yerelde '{local_hook_file}' dosyası bulunamadı.")
-        
+
         with c.cd(remote_path):
             c.run("git config receive.denyCurrentBranch ignore")
 
