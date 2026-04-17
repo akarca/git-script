@@ -1,71 +1,71 @@
+import argparse
 import os
+import shlex
 import subprocess
 import sys
+import warnings
 
 from fabric import Connection
 
-if not sys.warnoptions:
-    import warnings
+warnings.simplefilter("ignore")
 
-    warnings.simplefilter("ignore")
+HOOK_FILENAME = "create-post-update-hook.sh"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 
-def _scp_upload(ssh_host_alias, local_path, remote_path):
-    """scp -O ile dosya yükle (SFTP desteklemeyen sunucular için)."""
+def scp_upload(ssh_host_alias: str, local_path: str, remote_path: str) -> None:
+    """Upload a file using scp -O (for servers without SFTP support)."""
     cmd = ["scp", "-O", local_path, f"{ssh_host_alias}:{remote_path}"]
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
-        raise RuntimeError(f"scp hatası: {result.stderr.strip()}")
+        raise RuntimeError(f"scp failed: {result.stderr.strip()}")
 
 
-def run_remote_setup(ssh_host_alias, remote_path):
-    # SSH Config dosyasındaki host ismiyle bağlantı kurar
-    # Fabric varsayılan olarak ~/.ssh/config dosyasını okur.
-    print(f"--- {ssh_host_alias} hostuna bağlanılıyor... ---")
+def run_remote_setup(ssh_host_alias: str, remote_path: str) -> None:
+    local_hook = os.path.join(SCRIPT_DIR, HOOK_FILENAME)
+    if not os.path.exists(local_hook):
+        raise FileNotFoundError(f"Hook file not found: {local_hook}")
+
+    quoted_path = shlex.quote(remote_path)
+    quoted_hook = shlex.quote(HOOK_FILENAME)
+
+    print(f"--- Connecting to {ssh_host_alias}... ---")
+    c = Connection(ssh_host_alias)
+
+    print(f"[*] Creating directory: {remote_path}")
+    c.run(f"mkdir -p {quoted_path}")
+
+    print("[*] Initializing git repo...")
+    with c.cd(remote_path):
+        c.run("git init .")
+
+    print(f"[*] Uploading {HOOK_FILENAME}...")
+    scp_upload(ssh_host_alias, local_hook, f"{remote_path}/{HOOK_FILENAME}")
+
+    print("[*] Running hook script...")
+    with c.cd(remote_path):
+        c.run(f"chmod +x {quoted_hook}")
+        c.run(f"./{quoted_hook}")
+        c.run(f"rm -f {quoted_hook}")
+
+    print("\n--- Done! ---")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="Set up a remote directory as a git push target with auto-deploy.",
+    )
+    parser.add_argument("host", help="SSH config host alias (e.g. myserver)")
+    parser.add_argument("repo_path", help="Absolute path on the remote server (e.g. /var/www/myapp)")
+    args = parser.parse_args()
 
     try:
-        # 'c' objesi config'deki ayarları (User, Hostname, Port, IdentityFile) otomatik alır
-        c = Connection(ssh_host_alias)
-
-        # 1. Klasörü oluştur
-        print(f"[*] Klasör oluşturuluyor: {remote_path}")
-        c.run(f"mkdir -p {remote_path}")
-
-        # 2. Git init
-        print("[*] Git repo başlatılıyor...")
-        with c.cd(remote_path):
-            c.run("git init .")
-
-        # 3. Localdeki hook dosyasını yükle (scp -O ile, SFTP yerine)
-        local_hook_file = "create-post-update-hook.sh"
-        remote_hook_dest = f"{remote_path}/{local_hook_file}"
-
-        if os.path.exists(local_hook_file):
-            print(f"[*] {local_hook_file} yükleniyor...")
-            _scp_upload(ssh_host_alias, local_hook_file, remote_hook_dest)
-
-            # 4. Çalıştırma izni ver ve execute et
-            print("[*] Hook dosyası çalıştırılıyor...")
-            with c.cd(remote_path):
-                c.run(f"chmod +x {local_hook_file}")
-                c.run(f"./{local_hook_file}")
-                c.run(f"rm -f {local_hook_file}")
-
-            print("\n--- İşlem başarıyla tamamlandı! ---")
-
-        else:
-            print(f"\n[!] Hata: Yerelde '{local_hook_file}' dosyası bulunamadı.")
-
-        with c.cd(remote_path):
-            c.run("git config receive.denyCurrentBranch ignore")
-
+        run_remote_setup(args.host, args.repo_path)
     except Exception as e:
-        print(f"\n[!] Bağlantı veya komut hatası: {e}")
+        print(f"\n[!] Error: {e}", file=sys.stderr)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: main.py <host> <repo_path>")
-        sys.exit(1)
-
-    run_remote_setup(sys.argv[1], sys.argv[2])
+    sys.exit(main())
